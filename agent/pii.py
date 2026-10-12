@@ -1,39 +1,36 @@
-"""BƯỚC 3a — PII gate TRƯỚC KHI vào context/store (12').
-
-Đọc CHECKPOINTS.md (§3a) trước khi bắt đầu: Presidio không có tiếng Việt
-sẵn (AnalyzerEngine() mặc định chỉ hỗ trợ "en"). Đường an toàn cho 2h là
-regex recognizer + deny-list cho PERSON — coi spaCy/transformers NER là
-stretch goal, KHÔNG bắt buộc.
-
-Interface bắt buộc (tests/test_pii.py gọi trực tiếp 2 hàm này):
-
-    detect(text: str) -> list[dict]
-        Mỗi entity: {"type": str, "start": int, "end": int}
-        `type` là một trong: "VN_CCCD", "VN_PHONE", "VN_BANK_ACCOUNT", "EMAIL"
-        `start`/`end` là offset ký tự trong `text` (offset đầu bao gồm,
-        offset cuối KHÔNG bao gồm — giống slice Python text[start:end]).
-        Format này khớp với tests/vn_pii_testset.jsonl.
-
-    redact(text: str) -> str
-        Trả về `text` sau khi mọi entity từ detect() bị thay bằng
-        "[REDACTED_<TYPE>]". Phải xử lý overlap/thứ tự đúng khi có nhiều
-        entity (gợi ý: thay từ cuối văn bản về đầu để offset không bị lệch).
-
-Gợi ý định dạng (không bắt buộc đúng regex này, miễn đạt ngưỡng trên test
-set ở tests/vn_pii_testset.jsonl):
-    VN_CCCD          12 chữ số liên tiếp
-    VN_PHONE         0 + 9-10 chữ số, có thể có dấu cách/gạch ngang
-    VN_BANK_ACCOUNT  8-16 chữ số liên tiếp, thường đi kèm "STK"/"số tài khoản"
-    EMAIL            dạng chuẩn local@domain.tld
-
-Đo bằng: pytest tests/test_pii.py -v -s   (in ra precision/recall)
-"""
+"""Small regex based PII gate for the synthetic Vietnamese lab corpus."""
 from __future__ import annotations
+
+import re
+
+
+_EMAIL = re.compile(r"(?<![\w.+-])[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+")
+_CCCD = re.compile(r"(?<!\d)\d{12}(?!\d)")
+_PHONE = re.compile(r"(?<!\d)0\d{9,10}(?!\d)")
+_ACCOUNT = re.compile(r"(?<!\d)\d{8,16}(?!\d)")
+_ACCOUNT_LABEL = re.compile(r"(?:STK|số\s+tài\s+khoản|tài\s+khoản)\s*[:#-]?\s*$", re.IGNORECASE)
 
 
 def detect(text: str) -> list[dict]:
-    raise NotImplementedError("BƯỚC 3a: implement PII detection")
+    """Return non-overlapping PII spans using offsets into the original text."""
+    candidates: list[dict] = []
+    for kind, pattern in (("EMAIL", _EMAIL), ("VN_CCCD", _CCCD), ("VN_PHONE", _PHONE)):
+        candidates.extend({"type": kind, "start": m.start(), "end": m.end()} for m in pattern.finditer(text))
+    for match in _ACCOUNT.finditer(text):
+        if _ACCOUNT_LABEL.search(text[max(0, match.start() - 32):match.start()]):
+            candidates.append({"type": "VN_BANK_ACCOUNT", "start": match.start(), "end": match.end()})
+
+    # Prefer the most specific labeled/typed recognizer when spans overlap.
+    priority = {"VN_BANK_ACCOUNT": 0, "EMAIL": 1, "VN_CCCD": 2, "VN_PHONE": 3}
+    accepted: list[dict] = []
+    for candidate in sorted(candidates, key=lambda e: (e["start"], e["end"] - e["start"], priority[e["type"]])):
+        if any(candidate["start"] < item["end"] and item["start"] < candidate["end"] for item in accepted):
+            continue
+        accepted.append(candidate)
+    return sorted(accepted, key=lambda e: e["start"])
 
 
 def redact(text: str) -> str:
-    raise NotImplementedError("BƯỚC 3a: implement PII redaction")
+    for entity in reversed(detect(text)):
+        text = text[:entity["start"]] + f"[REDACTED_{entity['type']}]" + text[entity["end"]:]
+    return text

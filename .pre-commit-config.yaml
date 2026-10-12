@@ -1,0 +1,8 @@
+# Quét secret bằng binary Gitleaks đã cài sẵn trong PATH (v8.30.1),
+# không build Go trong giờ lab. Rule riêng của lab nằm ở .gitleaks.toml.
+repos:
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.30.1
+    hooks:
+      - id: gitleaks-system
+        pass_filenames: false
